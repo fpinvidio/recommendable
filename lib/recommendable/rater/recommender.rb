@@ -24,14 +24,24 @@ module Recommendable
       # @return [Array] a list of things this person's gonna love
       def recommended_for(klass, limit = 10, offset = 0)
         recommended_set = Recommendable::Helpers::RedisKeyMapper.recommended_set_for(klass, self.id)
-        return Recommendable.query(klass, []) unless rated_anything? && Recommendable.redis.zcard(recommended_set) > 0
 
         ids = Recommendable.redis.zrevrange(recommended_set, 0, -1, :with_scores => true)
         ids = ids.select { |id, score| score > 0 }.map { |pair| pair.first }
+        ids = Recommendable.query(klass, ids).order(created_at: :desc).pluck(:id)
 
-        order = ids.map { |id| "#{klass.quoted_table_name}.#{klass.quoted_primary_key} = %d DESC" }.join(', ')
+        #merge personal recommendation and general recommendation
+        score_set = Recommendable::Helpers::RedisKeyMapper.score_set_for(klass)
+        ids = ids + Recommendable.redis.zrevrange(score_set, 0, -1).map(&:to_i)
+        ids.uniq!
+
+        index_max = ids.count
+        index_start = [offset, index_max].min
+        index_end = [offset+limit-1, index_max].min
+        ids = ids[index_start..index_end]
+
+        order = ids.map { |id| "id = %d DESC" }.join(', ')
         order = klass.send(:sanitize_sql_for_assignment, [order, *ids])
-        Recommendable.query(klass, ids).order(order).limit(limit).offset(offset)
+        Recommendable.query(klass, ids).order(order)
       end
 
       # Removes an item from a user's set of recommendations
